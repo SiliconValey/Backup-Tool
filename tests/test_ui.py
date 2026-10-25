@@ -141,3 +141,106 @@ def test_themes_apply_and_persist(app):
     win2.set_theme(themes.SYSTEM_KEY)
     win.close()
     win2.close()
+
+
+def test_wizard_flow(app, fake_users, tmp_path, monkeypatch):
+    monkeypatch.setattr(mw, "users_root", lambda: str(fake_users))
+    monkeypatch.setattr(QMessageBox, "question",
+                        staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes))
+    win = mw.MainWindow()
+    win.settings.clear()
+    win.roots_list.clear()
+    win._add_root_item(str(fake_users))
+    win.cb_drivers.setChecked(False)
+    win.cb_wifi.setChecked(False)
+    win.cb_programs.setChecked(False)
+    assert win.pages.currentIndex() == mw.P_ORIGIN
+    win._go_next()
+    assert win.pages.currentIndex() == mw.P_WHAT
+    assert "Buscar" in win.btn_next.text()
+    win._go_next()                                    # inicia la búsqueda
+    assert win.pages.currentIndex() == mw.P_REVIEW
+    assert wait_until(app, lambda: win._scan_worker is None)
+    assert win.btn_next.isEnabled()
+    # Volver a "Qué copiar" sin cambiar nada no obliga a buscar de nuevo
+    win._go_back()
+    assert "Ver resultados" in win.btn_next.text()
+    win.cat_checks["video"].setChecked(False)         # un cambio sí
+    assert "Buscar" in win.btn_next.text()
+    assert win.header.max_reachable == mw.P_WHAT
+    win._go_next()
+    assert wait_until(app, lambda: win._scan_worker is None)
+    win._go_next()
+    assert win.pages.currentIndex() == mw.P_DEST
+    assert not win.btn_next.isEnabled()               # falta el destino
+    dest = tmp_path / "usb"
+    dest.mkdir()
+    win.dest_edit.setText(str(dest))
+    assert win.btn_next.isEnabled()
+    win._go_next()                                    # inicia el backup
+    assert win.pages.currentIndex() == mw.P_COPY
+    assert wait_until(app, lambda: win._backup_worker is None, 20)
+    assert win.pages.currentIndex() == mw.P_DONE
+    assert win.done_title.text() == "Backup terminado"
+    assert win.tile_copied.value == "5"               # sin el video
+    win.set_theme("neon")                             # repinta la pantalla final sin fallar
+    win._new_backup()
+    assert win.pages.currentIndex() == mw.P_ORIGIN
+    win.settings.clear()
+    win.close()
+
+
+def test_check_visible_respects_filter(app):
+    win = mw.MainWindow()
+    win.model.add_items([fi("/a/playa1.jpg", 10), fi("/a/playa2.jpg", 20),
+                         fi("/a/montaña.jpg", 30), fi("/a/tema.mp3", 5, "Audio", ".mp3")])
+    win.filter_edit.setText("playa")
+    win._apply_filter()
+    assert win.btn_uncheck_all.text() == "Desmarcar visibles"
+    win._check_visible(False)
+    assert sorted(i.path for i in win.model.checked_items()) == ["/a/montaña.jpg", "/a/tema.mp3"]
+    assert win.model.totals()[2:] == (2, 35)
+    win.filter_edit.clear()
+    win._apply_filter()
+    win._check_visible(True)
+    assert win.model.totals()[2] == 4
+    win.settings.clear()
+    win.close()
+
+
+def test_exclusions_saved_as_difference(app, monkeypatch):
+    from backuptool.core import categories as cats
+    win = mw.MainWindow()
+    win.settings.clear()
+    # Formato viejo (lista completa) se sigue leyendo
+    win.settings.setValue("excluded_dirs", sorted((cats.DEFAULT_EXCLUDED_DIRS - {"node_modules"})
+                                                  | {"mis_temporales"}))
+    ex = win._excluded_dirs()
+    assert "mis_temporales" in ex and "node_modules" not in ex
+    new_text = "\n".join(sorted(ex | {"otra"}))
+    monkeypatch.setattr(mw.QInputDialog, "getMultiLineText",
+                        staticmethod(lambda *a, **k: (new_text, True)))
+    win._edit_exclusions()
+    assert win.settings.value("excluded_dirs") is None
+    # Una exclusión nueva en una versión futura se aplica igual
+    monkeypatch.setattr(cats, "DEFAULT_EXCLUDED_DIRS", cats.DEFAULT_EXCLUDED_DIRS | {"nueva_version"})
+    ex2 = win._excluded_dirs()
+    assert {"otra", "mis_temporales", "nueva_version"} <= ex2 and "node_modules" not in ex2
+    win.settings.clear()
+    win.close()
+
+
+def test_options_persist(app):
+    win = mw.MainWindow()
+    win.settings.clear()
+    win.cb_wifi.setChecked(True)
+    win.cb_wifi_keys.setChecked(True)
+    win.cb_programs.setChecked(False)
+    win.cb_skip_cloud.setChecked(False)
+    win._save_settings()
+    win2 = mw.MainWindow()
+    assert win2.cb_wifi_keys.isChecked() and not win2.cb_programs.isChecked()
+    assert not win2.cb_skip_cloud.isChecked()
+    win.settings.clear()
+    win.close()
+    win2.close()

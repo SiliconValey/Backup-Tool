@@ -9,13 +9,15 @@ Aplicación de escritorio para Windows (Python + PySide6) que busca y respalda e
 
 Los resultados se muestran en un explorador agrupado por **categoría → extensión**, con filtro de texto, ordenamiento por columna, vista previa de imágenes y casillas para elegir qué copiar.
 
-![Captura de BackupTool con el tema Medianoche](docs/captura.png)
+![BackupTool: paso «Qué copiar» del asistente, con el tema Neón](docs/captura.png)
 
 ## Temas
 
-En **Ver → Tema** se elige entre *Según Windows*, *Claro*, *Oscuro*, *Medianoche* y *Arena*. La elección se recuerda para la próxima vez.
+En **Ver → Tema** se elige entre *Según Windows*, *Claro*, *Oscuro*, *Medianoche*, *Arena*, *Neón*, *Cristal* y *Aero*. La elección se recuerda para la próxima vez.
 
-Para agregar un tema nuevo alcanza con sumar una entrada a `THEMES` en `backuptool/ui/themes.py`.
+*Neón*, *Cristal* y *Aero* son temas completos: estilizan con degradés todos los widgets (botones, barras de progreso, menús, combos, spinbox, encabezados, scrollbars, pestañas y barra de estado).
+
+Para agregar un tema nuevo alcanza con sumar una entrada a `THEMES` en `backuptool/ui/themes.py`. Con `rich=True` y los campos `grad`, `bar_grad`, `chrome_grad`, `glow`, etc. se genera la hoja de estilos completa.
 
 ## Requisitos
 
@@ -41,16 +43,22 @@ Genera `dist\BackupTool\BackupTool.exe` con PyInstaller. El ejecutable pide perm
 
 ## Cómo se usa
 
-1. **Dónde buscar**: por defecto se recorre `C:\Users` (los perfiles de usuario). También se pueden tildar otras unidades o agregar cualquier carpeta; para un disco entero, agregar su raíz (`C:\`).
-2. **Qué buscar**: se tildan las categorías y se presiona **Buscar archivos**. Los resultados aparecen en el explorador mientras se recorre el disco.
-3. En el explorador se desmarca lo que no se quiera copiar. Doble clic abre el archivo; clic derecho permite **Mostrar en el Explorador**.
-4. **Destino**: se elige la unidad (los pendrives aparecen primero) o una carpeta, y se presiona **Iniciar backup**. Antes de empezar, la app verifica el espacio libre, avisa si el destino es FAT32 (no admite archivos de 4 GB o más) y si el destino está en el mismo disco del sistema.
+La app es un asistente de seis pasos, pensado para respaldar los datos antes de reinstalar Windows. La barra de pasos de arriba permite volver a uno anterior.
 
-### Qué se excluye siempre
+1. **Origen**: por defecto se recorre `C:\Users` (los perfiles de usuario). También se pueden tildar otras unidades o agregar cualquier carpeta; para un disco entero, agregar su raíz (`D:\`).
+2. **Qué copiar**: se eligen las tarjetas (imágenes, documentos, marcadores, drivers, redes Wi-Fi, lista de programas…) y se presiona **Buscar archivos**.
+3. **Revisar**: los resultados aparecen en el explorador mientras se recorre el disco. Se desmarca lo que no se quiera copiar; con un filtro escrito, *Marcar/Desmarcar visibles* actúa sólo sobre lo que se ve. Doble clic abre el archivo; clic derecho permite **Mostrar en el Explorador**.
+4. **Destino**: se elige la unidad (los pendrives aparecen primero) o una carpeta. La app muestra el espacio libre y avisa si no alcanza, si el destino es FAT32 (no admite archivos de 4 GB o más) o si está en el disco del sistema, que se borra al reinstalar.
+5. **Copiando**: progreso, velocidad y tiempo restante. Se puede cancelar y retomar después con el mismo nombre.
+6. **Listo**: resumen con lo copiado, los errores y un botón para abrir la carpeta del backup.
 
-`Windows`, `Program Files`, `ProgramData`, `AppData`, la Papelera, `System Volume Information` y carpetas de desarrollo como `node_modules`, `.git` o `venv`. La lista se puede editar con **Carpetas excluidas…**.
+Si se cambia el origen o lo que se busca después de una búsqueda, hay que volver a buscar antes de seguir.
 
-AppData se excluye porque está llena de cachés. Los marcadores de los navegadores, que viven ahí, se buscan aparte por su ruta conocida.
+### Qué se excluye
+
+`AppData`, la Papelera, `System Volume Information` y carpetas de desarrollo como `node_modules`, `.git` o `venv` se excluyen en cualquier nivel. Las carpetas de sistema (`Windows`, `Program Files`, `ProgramData`, `Recovery`…) sólo se excluyen en la raíz de cada unidad, para no perder por ejemplo una carpeta `Documentos\Windows`. La lista se puede editar con **Carpetas excluidas…**.
+
+AppData se excluye porque está llena de cachés. Los marcadores de los navegadores, que viven ahí, se buscan aparte por su ruta conocida. También se saltean las carpetas de backups anteriores hechos con la app.
 
 ## Estructura del backup
 
@@ -90,7 +98,9 @@ backuptool/core/            lógica, sin dependencias de Qt (se prueba sin inter
     copier.py               copia por bloques con progreso, reanudación, verificación SHA-256
     winutils.py             unidades, permisos, rutas largas, comandos de consola
 backuptool/ui/
-    main_window.py          ventana principal
+    main_window.py          ventana principal: asistente de 6 pasos
+    widgets.py              barra de pasos, tarjetas de opción y de resultado, barra de espacio
+    icons.py                íconos dibujados con QPainter en el color del tema
     file_model.py           modelo de árbol propio (QAbstractItemModel) + proxy de filtro
     workers.py              búsqueda y copia en QThread
     themes.py               temas (paleta + hoja de estilos) e ícono

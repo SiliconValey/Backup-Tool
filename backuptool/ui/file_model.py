@@ -240,6 +240,29 @@ class FoundItemsModel(QAbstractItemModel):
     def set_all_checked(self, checked: bool) -> None:
         self.set_checked(QModelIndex(), checked)
 
+    def set_checked_many(self, indexes: list[QModelIndex], checked: bool) -> None:
+        """Marca o desmarca muchos nodos (archivos o grupos) con una sola
+        notificación a la vista: con miles de filas, una señal por archivo es lenta."""
+        nodes = {id(n): n for n in (self._node(i) for i in indexes) if n is not self._root}
+        # Si un nodo está dentro de otro de la lista, alcanza con el de arriba
+        chosen = []
+        for n in nodes.values():
+            p = n.parent
+            while p is not None and id(p) not in nodes:
+                p = p.parent
+            if p is None:
+                chosen.append(n)
+        for n in chosen:
+            d_count, d_size = self._apply_check(n, checked)
+            parent = n.parent
+            while parent is not None:
+                parent.checked_count += d_count
+                parent.checked_size += d_size
+                parent = parent.parent
+        if chosen:
+            self._emit_children_changed(self._root)
+            self._emit_totals()
+
     def _apply_check(self, node: Node, checked: bool) -> tuple[int, int]:
         if node.level == LEVEL_ITEM:
             if node.checked == checked:
@@ -278,7 +301,7 @@ class FoundItemsModel(QAbstractItemModel):
         first = self.createIndex(0, COL_NAME, node.children[0])
         last = self.createIndex(len(node.children) - 1, COL_NAME, node.children[-1])
         self.dataChanged.emit(first, last, [Qt.ItemDataRole.CheckStateRole])
-        if node.level < LEVEL_GROUP:
+        if node.level < LEVEL_GROUP:   # root y categorías: bajar a grupos
             for child in node.children:
                 self._emit_children_changed(child)
 
