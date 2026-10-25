@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import os
+import subprocess
 
 from .winutils import IS_WINDOWS, run_command, system_tool
 
@@ -24,7 +25,9 @@ def export_wifi_profiles(dest_dir: str, include_keys: bool = False) -> tuple[boo
         args.append("key=clear")
     try:
         code, out = run_command(args, timeout=120)
-    except OSError as exc:
+    except subprocess.TimeoutExpired:
+        return False, "netsh no respondió a tiempo"
+    except (OSError, subprocess.SubprocessError) as exc:
         return False, str(exc)
     exported = [f for f in os.listdir(dest_dir) if f.lower().endswith(".xml")]
     if exported:

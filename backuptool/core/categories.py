@@ -94,6 +94,15 @@ DEFAULT_EXCLUDED_DIRS: frozenset[str] = frozenset({
     "site-packages", ".gradle", ".m2", ".nuget", ".cache", ".tox", ".idea",
 })
 
+# De las anteriores, estas son carpetas de sistema que sólo tienen sentido en la
+# raíz de una unidad (C:\Windows, D:\Recovery...). Más abajo se recorren: un
+# usuario puede tener por ejemplo Documentos\Windows o Escritorio\Recovery.
+ROOT_ONLY_DIRS: frozenset[str] = frozenset({
+    "windows", "program files", "program files (x86)", "programdata",
+    "$windows.~bt", "$windows.~ws", "$winreagent", "$sysreset", "recovery",
+    "perflogs", "msocache", "config.msi",
+})
+
 SAVED_GAMES_DIRNAME = "saved games"
 
 

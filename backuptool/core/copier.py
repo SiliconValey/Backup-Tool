@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from . import browsers, drivers, extras
-from .models import CopyResult, FoundItem, ItemKind
+from .models import BACKUP_MARKER, CopyResult, FoundItem, ItemKind
 from .winutils import IS_WINDOWS, computer_name, filesystem_of, format_size, long_path
 
 CHUNK = 1024 * 1024
@@ -142,6 +142,7 @@ class BackupRunner:
     # ----------------------------------------------------------------- run
     def run(self) -> CopyResult:
         os.makedirs(long_path(self.backup_dir), exist_ok=True)
+        self._write_marker()
         free = shutil.disk_usage(self.opt.dest_root).free
         self.log(f"Destino: {self.backup_dir}")
         self.log(f"A copiar: {len(self.items)} elementos, {format_size(self._bytes_total)} "
@@ -166,6 +167,9 @@ class BackupRunner:
         except CopyCancelled:
             self.result.cancelled = True
             self.log("Backup cancelado por el usuario.")
+        except Exception as exc:  # noqa: BLE001 - se conserva lo que ya se copió
+            self.result.failed += 1
+            self._error(f"Error inesperado, el backup se detuvo: {exc!r}")
         finally:
             self._write_reports(started)
         self._progress("Terminado", force=True)
@@ -179,24 +183,29 @@ class BackupRunner:
                "destino": os.path.relpath(dest, self.backup_dir), "tamaño": item.size,
                "modificado": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(item.mtime)),
                "sha256": "", "estado": ""}
+        # El progreso avanza exactamente item.size por archivo, salga bien o mal
+        # (si falla a mitad, o si el archivo cambió de tamaño desde la búsqueda,
+        # la barra no se pasa del total ni queda trabada).
+        bytes_before = self._bytes_done
         try:
             if self._fat32 and item.size > FAT32_MAX:
                 raise OSError("archivo de 4 GB o más: no entra en un destino FAT32")
             if self._already_copied(item, dest):
                 row["estado"] = "ya existía"
                 self.result.skipped_existing += 1
-                self._bytes_done += item.size
             else:
                 row["sha256"] = self._copy_with_progress(item.path, dest)
                 row["estado"] = "copiado"
                 self.result.copied += 1
                 self.result.bytes_copied += item.size
         except CopyCancelled:
+            self._bytes_done = bytes_before
             raise
         except Exception as exc:  # noqa: BLE001 - un archivo no debe frenar el backup
             row["estado"] = f"error: {exc}"
             self.result.failed += 1
             self._error(f"{item.path}: {exc}")
+        self._bytes_done = bytes_before + item.size
         self._manifest.append(row)
 
     def _already_copied(self, item: FoundItem, dest: str) -> bool:
@@ -210,6 +219,7 @@ class BackupRunner:
         os.makedirs(long_path(os.path.dirname(dest)), exist_ok=True)
         tmp = dest + ".bt_part"
         hasher = hashlib.sha256() if self.opt.verify else None
+        digest = ""
         try:
             with open(long_path(src), "rb") as fin, open(long_path(tmp), "wb") as fout:
                 while True:
@@ -223,6 +233,12 @@ class BackupRunner:
                         hasher.update(chunk)
                     self._bytes_done += len(chunk)
                     self._progress("Copiando archivos", src)
+            # Se verifica ANTES de reemplazar: si la copia está mal, no debe quedar
+            # en el destino (con igual tamaño y fecha se daría por buena al retomar).
+            if hasher:
+                digest = hasher.hexdigest()
+                if _sha256_file(long_path(tmp)) != digest:
+                    raise OSError("la verificación falló: la copia no coincide con el original")
             shutil.copystat(long_path(src), long_path(tmp))
             os.replace(long_path(tmp), long_path(dest))
         except BaseException:
@@ -231,12 +247,7 @@ class BackupRunner:
             except OSError:
                 pass
             raise
-        if hasher:
-            digest = hasher.hexdigest()
-            if _sha256_file(long_path(dest)) != digest:
-                raise OSError("la verificación falló: la copia no coincide con el original")
-            return digest
-        return ""
+        return digest
 
     # ------------------------------------------------------------ marcadores
     def _backup_bookmarks(self, marks: list[FoundItem]) -> None:
@@ -320,6 +331,17 @@ class BackupRunner:
                 self._error(f"Lista de programas: {exc}")
 
     # -------------------------------------------------------------- reportes
+    def _write_marker(self) -> None:
+        path = os.path.join(self.backup_dir, BACKUP_MARKER)
+        try:
+            with open(long_path(path), "w", encoding="utf-8") as fh:
+                fh.write("Carpeta creada por BackupTool. La búsqueda de archivos la saltea.\n")
+            if IS_WINDOWS:
+                import ctypes
+                ctypes.windll.kernel32.SetFileAttributesW(long_path(path), 0x2)  # oculto
+        except OSError:
+            pass
+
     def _write_reports(self, started: float) -> None:
         try:
             if self._manifest:

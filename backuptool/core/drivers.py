@@ -14,6 +14,7 @@ import configparser
 import glob
 import os
 import re
+import subprocess
 
 from .categories import DRIVERS_LABEL
 from .models import FoundItem, ItemKind
@@ -127,8 +128,10 @@ def list_third_party_drivers(directory: str | None = None) -> list[FoundItem]:
         version = version.split(",")[-1].strip() if version else ""
         name = os.path.basename(path)
         label = f"{provider} — {name}" + (f" (v{version})" if version else "")
+        # size=0: el tamaño del .inf no representa lo que ocupa el paquete exportado
+        # y así los totales de la interfaz coinciden con el espacio requerido.
         items.append(FoundItem(
-            path=path, size=st.st_size, mtime=st.st_mtime, category=DRIVERS_LABEL,
+            path=path, size=0, mtime=st.st_mtime, category=DRIVERS_LABEL,
             group=group, kind=ItemKind.DRIVER, display_name=label,
             extra={"inf": name, "class": cls, "provider": provider, "version": version},
         ))
@@ -143,7 +146,9 @@ def export_driver(inf_name: str, dest_dir: str) -> tuple[bool, str]:
     os.makedirs(target, exist_ok=True)
     try:
         code, out = run_command([system_tool("pnputil.exe"), "/export-driver", inf_name, target], timeout=300)
-    except (OSError, TimeoutError) as exc:
+    except subprocess.TimeoutExpired:
+        return False, "pnputil no respondió a tiempo (se canceló la exportación de este driver)"
+    except (OSError, subprocess.SubprocessError) as exc:
         return False, str(exc)
     return code == 0, out
 

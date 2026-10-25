@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterator
 
 from . import categories as cats
-from .models import FoundItem, ItemKind, ScanStats
+from .models import BACKUP_MARKER, FoundItem, ItemKind, ScanStats
 from .winutils import (CLOUD_ONLY_MASK, FILE_ATTRIBUTE_REPARSE_POINT,
                        FILE_ATTRIBUTE_SYSTEM, IS_WINDOWS)
 
@@ -37,6 +37,29 @@ class ScanOptions:
 
 def _norm(path: str) -> str:
     return os.path.normcase(os.path.normpath(path))
+
+
+def _is_drive_root(path: str) -> bool:
+    """C:\\, D:\\, \\\\servidor\\recurso\\ o / ."""
+    _drive, rest = os.path.splitdrive(os.path.normpath(path))
+    return rest in ("", "\\", "/")
+
+
+# Carpetas que delatan un backup hecho con una versión anterior (sin marcador).
+_LEGACY_BACKUP_FILES = {"manifiesto.csv", "leeme.txt"}
+
+
+def _is_legacy_backup(folder: str, entries: list[os.DirEntry]) -> bool:
+    """Confirma por el contenido del LEEME.txt, para no saltear por error una
+    carpeta del usuario que casualmente tenga archivos con esos nombres."""
+    for e in entries:
+        if e.name.casefold() == "leeme.txt":
+            try:
+                with open(e.path, encoding="utf-8", errors="replace") as fh:
+                    return fh.read(64).startswith("Backup generado por BackupTool")
+            except OSError:
+                return False
+    return False
 
 
 IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003   # junctions ("Mis documentos", "All Users"...)
@@ -78,7 +101,9 @@ class Scanner:
             c.key: options.min_kb.get(c.key, c.default_min_kb) * 1024
             for c in cats.ALL_CATEGORIES
         }
-        self._excluded_names = {n.casefold() for n in options.excluded_dir_names}
+        names = {n.casefold() for n in options.excluded_dir_names}
+        self._root_only_names = names & cats.ROOT_ONLY_DIRS
+        self._excluded_names = names - cats.ROOT_ONLY_DIRS
         self._excluded_paths = {_norm(p) for p in options.excluded_paths if p}
         self._saved_games = cats.SAVED_GAMES.key in options.enabled_categories
         self._last_report = 0.0
@@ -88,7 +113,9 @@ class Scanner:
         """Generador de elementos encontrados. Se puede cancelar con cancel_event."""
         start = time.monotonic()
         seen_roots: set[str] = set()
-        for root in self.opt.roots:
+        # Las más cortas primero: así una raíz que contiene a otra se recorre antes
+        # y la interna se descarta, sin importar el orden en que se agregaron.
+        for root in sorted(self.opt.roots, key=lambda r: len(_norm(r))):
             nroot = _norm(root)
             # Evita recorrer dos veces si una raíz está dentro de otra
             if any(nroot == r or nroot.startswith(r.rstrip(os.sep) + os.sep) for r in seen_roots):
@@ -110,8 +137,11 @@ class Scanner:
             self._last_report = now
             self.progress(self.stats, current)
 
-    def _skip_dir(self, entry: os.DirEntry) -> bool:
-        if entry.name.casefold() in self._excluded_names:
+    def _skip_dir(self, entry: os.DirEntry, at_drive_root: bool) -> bool:
+        name = entry.name.casefold()
+        if name in self._excluded_names:
+            return True
+        if at_drive_root and name in self._root_only_names:
             return True
         if self._excluded_paths and _norm(entry.path) in self._excluded_paths:
             return True
@@ -133,12 +163,18 @@ class Scanner:
             except OSError:
                 self.stats.errors += 1
                 continue
+            names = {e.name.casefold() for e in entries}
+            if BACKUP_MARKER in names or (_LEGACY_BACKUP_FILES <= names
+                                          and _is_legacy_backup(folder, entries)):
+                self.stats.skipped_backups += 1   # backup anterior: no se respalda de nuevo
+                continue
             self.stats.dirs_scanned += 1
             self._report(folder)
+            at_drive_root = _is_drive_root(folder)
             for entry in entries:
                 try:
                     if entry.is_dir(follow_symlinks=False):
-                        if self._skip_dir(entry):
+                        if self._skip_dir(entry, at_drive_root):
                             continue
                         child_forced = forced
                         if (child_forced is None and self._saved_games

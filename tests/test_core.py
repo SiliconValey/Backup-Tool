@@ -207,6 +207,119 @@ def test_backup_run_and_resume(fake_users, tmp_path):
     assert res2.copied == 0 and res2.skipped_existing == 6
 
 
+def test_scanner_nested_roots_any_order(fake_users):
+    # La interna primero: antes se recorría dos veces (C:\Users + C:\)
+    items, _ = scan_all(ScanOptions(roots=[str(fake_users / "chris"), str(fake_users)]))
+    paths = [i.path for i in items]
+    assert len(paths) == len(set(paths)) == 6
+
+
+def test_scanner_skips_previous_backups(fake_users, tmp_path):
+    items, _ = scan_all(ScanOptions(roots=[str(fake_users)]))
+    opts = CopyOptions(dest_root=str(fake_users / "chris"), backup_name="Backup_viejo",
+                       wifi_profiles=False, programs_list=False)
+    BackupRunner(items, opts).run()
+    # Backup de una versión anterior, sin marcador: se reconoce por el LEEME.txt
+    legacy = fake_users / "chris" / "Backup_legacy"
+    write(str(legacy / "LEEME.txt"), data="Backup generado por BackupTool\n".encode())
+    write(str(legacy / "manifiesto.csv"), data=b"x")
+    write(str(legacy / "Imagenes" / "copia.jpg"), 50_000)
+    # Carpeta del usuario con archivos de igual nombre: NO se debe saltear
+    mine = fake_users / "chris" / "Documents" / "trabajo"
+    write(str(mine / "LEEME.txt"), data="notas mías".encode())
+    write(str(mine / "manifiesto.csv"), data=b"x")
+    again, stats = scan_all(ScanOptions(roots=[str(fake_users)]))
+    names = sorted(os.path.basename(i.path) for i in again)
+    assert "copia.jpg" not in names
+    assert not any("Backup_viejo" in i.path for i in again)
+    assert names.count("manifiesto.csv") == 1        # el de "trabajo"
+    assert stats.skipped_backups == 2
+
+
+def test_system_dirs_excluded_only_at_drive_root(fake_users, monkeypatch):
+    from backuptool.core import scanner as sc
+    write(str(fake_users / "chris" / "Documents" / "Windows" / "guia.pdf"), 1_000)
+    write(str(fake_users / "Windows" / "System32" / "algo.pdf"), 1_000)
+    write(str(fake_users / "Recovery" / "x.pdf"), 1_000)
+    # Se simula que la carpeta Users es la raíz de una unidad
+    monkeypatch.setattr(sc, "_is_drive_root",
+                        lambda p: os.path.normpath(p) == os.path.normpath(str(fake_users)))
+    items, _ = scan_all(ScanOptions(roots=[str(fake_users)]))
+    names = {os.path.basename(i.path) for i in items}
+    assert "guia.pdf" in names                       # Documentos\Windows sí se respalda
+    assert "algo.pdf" not in names and "x.pdf" not in names
+
+
+def test_verify_failure_leaves_no_copy(fake_users, tmp_path, monkeypatch):
+    from backuptool.core import copier
+    items, _ = scan_all(ScanOptions(roots=[str(fake_users)], enabled_categories={"documents"}))
+    opts = CopyOptions(dest_root=str(tmp_path), backup_name="b", verify=True,
+                       wifi_profiles=False, programs_list=False)
+    real = copier._sha256_file
+    monkeypatch.setattr(copier, "_sha256_file", lambda p: "0" * 64)
+    res = BackupRunner(items, opts).run()
+    assert res.failed == 1 and res.copied == 0
+    assert list((tmp_path / "b").rglob("*.docx")) == []   # no queda una copia mala
+    monkeypatch.setattr(copier, "_sha256_file", real)
+    res2 = BackupRunner(items, opts).run()           # al retomar se copia de verdad
+    assert res2.copied == 1 and res2.skipped_existing == 0
+
+
+def test_progress_never_exceeds_total(fake_users, tmp_path, monkeypatch):
+    items, _ = scan_all(ScanOptions(roots=[str(fake_users)]))
+    seen = []
+    opts = CopyOptions(dest_root=str(tmp_path), backup_name="b",
+                       wifi_profiles=False, programs_list=False)
+    runner = BackupRunner(items, opts, progress=seen.append)
+    real = runner._copy_with_progress
+    calls = {"n": 0}
+
+    def flaky(src, dest):
+        calls["n"] += 1
+        if calls["n"] % 2:
+            runner._bytes_done += 10_000          # copió un poco y falló
+            raise OSError("se desconectó el pendrive")
+        return real(src, dest)
+
+    monkeypatch.setattr(runner, "_copy_with_progress", flaky)
+    res = runner.run()
+    assert res.failed == 3 and res.copied == 3
+    assert all(p.bytes_done <= p.bytes_total for p in seen)
+    assert seen[-1].bytes_done == seen[-1].bytes_total
+
+
+def test_command_timeout_does_not_abort(monkeypatch, tmp_path):
+    import subprocess
+    from backuptool.core import extras
+
+    def hang(*a, **k):
+        raise subprocess.TimeoutExpired("pnputil", 300)
+
+    monkeypatch.setattr(drivers, "IS_WINDOWS", True)
+    monkeypatch.setattr(drivers, "run_command", hang)
+    ok, msg = drivers.export_driver("oem1.inf", str(tmp_path))
+    assert not ok and "a tiempo" in msg
+    monkeypatch.setattr(extras, "IS_WINDOWS", True)
+    monkeypatch.setattr(extras, "run_command", hang)
+    ok, msg = extras.export_wifi_profiles(str(tmp_path / "wifi"))
+    assert not ok and "a tiempo" in msg
+
+
+def test_unexpected_error_keeps_partial_result(fake_users, tmp_path, monkeypatch):
+    items, _ = scan_all(ScanOptions(roots=[str(fake_users)]))
+    opts = CopyOptions(dest_root=str(tmp_path), backup_name="b",
+                       wifi_profiles=False, programs_list=True)
+
+    def boom(self):
+        raise RuntimeError("falla inesperada")
+
+    monkeypatch.setattr(BackupRunner, "_backup_system", boom)
+    res = BackupRunner(items, opts).run()
+    assert res.copied == 6 and res.failed == 1       # no se pierde lo que ya se copió
+    assert (tmp_path / "b" / "manifiesto.csv").exists()
+    assert "inesperado" in (tmp_path / "b" / "errores.log").read_text(encoding="utf-8")
+
+
 def test_backup_cancel(fake_users, tmp_path):
     items, _ = scan_all(ScanOptions(roots=[str(fake_users)]))
     ev = threading.Event()

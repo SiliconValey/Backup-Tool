@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+# Archivo que se crea al empezar cada backup. El recorrido saltea las carpetas
+# que lo contienen, para no respaldar un backup anterior dentro del nuevo.
+BACKUP_MARKER = ".backuptool"
+
 
 class ItemKind(str, Enum):
     FILE = "file"          # archivo común (foto, audio, documento...)
@@ -46,6 +50,7 @@ class ScanStats:
     bytes_found: int = 0
     errors: int = 0
     skipped_cloud: int = 0
+    skipped_backups: int = 0
     cancelled: bool = False
     seconds: float = 0.0
 
