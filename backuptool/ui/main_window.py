@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFileDialog, QFrame
                                QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QToolButton,
                                QTreeView, QVBoxLayout, QWidget)
 
-from .. import APP_NAME, APP_VERSION
+from .. import APP_AUTHOR, APP_NAME, APP_VERSION
 from ..core import categories as cats
 from ..core.copier import CopyOptions, CopyProgress, default_backup_name, required_space
 from ..core.models import CopyResult, FoundItem, ItemKind, ScanStats
@@ -998,7 +998,8 @@ class MainWindow(QMainWindow):
         box.setIconPixmap(themes.app_icon().pixmap(64, 64))
         box.setText(f"<b>{APP_NAME} {APP_VERSION}</b><br>Backup de archivos personales, "
                     "marcadores, drivers y redes Wi-Fi antes de reinstalar Windows."
-                    "<br><br>Python + PySide6")
+                    f"<br><br>Autor: <b>{APP_AUTHOR}</b>"
+                    "<br>Licencia MIT · Python + PySide6")
         box.exec()
 
     # ================================================================ búsqueda
